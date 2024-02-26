@@ -1,8 +1,9 @@
+import { UsersService } from 'services';
 import { Game, Room } from 'types';
 
 export const games: Record<string, Game> = {};
 
-export const getGameById = (gameId: string) => games[gameId];
+export const getGameById = (gameId: string | number) => games[gameId];
 
 export const createGame = (room: Room) => {
   if (!room.users[0] || !room.users[1]) {
@@ -34,4 +35,14 @@ export const createGame = (room: Room) => {
 
   games[game.id] = game;
   return game;
+};
+
+export const getPlayerById = (game: Game, playerId: string | number) => {
+  return game.players.find((player) => player.id === playerId);
+};
+
+export const notifyAllPlayers = (game: Game, message: string) => {
+  game.players.forEach((player) => {
+    UsersService.getUserByName(player.userName)?.wsRef.send(message);
+  });
 };

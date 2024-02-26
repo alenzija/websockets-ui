@@ -145,92 +145,96 @@ wss.on('connection', function connection(ws, req) {
           }
           const { length, position, direction } = ship;
           for (let i = 0; i < length; i += 1) {
-            game.players.forEach((player) => {
-              UsersService.getUserByName(player.userName)?.wsRef.send(
-                JSON.stringify({
-                  type: 'attack',
-                  data: JSON.stringify({
-                    position: direction
-                      ? { x: position.x, y: position.y + i }
-                      : { x: position.x + i, y: position.y },
-                    currentPlayer: indexPlayer,
-                    status: 'killed',
-                  }),
-                  id: 0,
+            GamesService.notifyAllPlayers(
+              game,
+              JSON.stringify({
+                type: 'attack',
+                data: JSON.stringify({
+                  position: direction
+                    ? { x: position.x, y: position.y + i }
+                    : { x: position.x + i, y: position.y },
+                  currentPlayer: indexPlayer,
+                  status: 'killed',
                 }),
-              );
-            });
-            if (currentPlayer.countKilledShips === 10) {
-              const winPlayer = UsersService.getUserByName(
-                currentPlayer.userName,
-              )?.index;
-
-              if (!winPlayer) {
-                return;
-              }
-              game.players.forEach((player) => {
-                UsersService.getUserByName(player.userName)?.wsRef.send(
-                  JSON.stringify({
-                    type: 'finish',
-                    data: JSON.stringify({
-                      winPlayer,
-                    }),
-                    id: 0,
-                  }),
-                );
-              });
-              finishGame(winPlayer);
-              delete rooms[game.roomId];
-              wss.clients.forEach(function each(client) {
-                if (client.readyState === WebSocket.OPEN) {
-                  client.send(getUpdateRoomData());
-                }
-              });
-            }
+                id: 0,
+              }),
+            );
           }
-          getMissPositions(ship).forEach(({ x, y }) => {
-            game.players.forEach((player) => {
-              UsersService.getUserByName(player.userName)?.wsRef.send(
-                JSON.stringify({
-                  type: 'attack',
-                  data: JSON.stringify({
-                    position: { x, y },
-                    currentPlayer: indexPlayer,
-                    status: 'miss',
-                  }),
-                  id: 0,
+
+          if (currentPlayer.countKilledShips === 10) {
+            const winPlayer = currentPlayer.id;
+
+            if (!winPlayer) {
+              return;
+            }
+            GamesService.notifyAllPlayers(
+              game,
+              JSON.stringify({
+                type: 'finish',
+                data: JSON.stringify({
+                  winPlayer,
                 }),
-              );
+                id: 0,
+              }),
+            );
+
+            const userId = UsersService.getUserByName(
+              currentPlayer.userName,
+            )?.index;
+
+            if (!userId) {
+              return;
+            }
+
+            finishGame(userId);
+            delete rooms[game.roomId];
+            wss.clients.forEach(function each(client) {
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(getUpdateRoomData());
+              }
             });
-          });
-        } else {
-          game.players.forEach((player) => {
-            UsersService.getUserByName(player.userName)?.wsRef.send(
+          }
+
+          getMissPositions(ship).forEach(({ x, y }) => {
+            GamesService.notifyAllPlayers(
+              game,
               JSON.stringify({
                 type: 'attack',
                 data: JSON.stringify({
                   position: { x, y },
                   currentPlayer: indexPlayer,
-                  status: resultAttack.status,
+                  status: 'miss',
                 }),
                 id: 0,
               }),
             );
           });
-        }
-        game.currentPlayerId =
-          resultAttack.status === 'miss' ? enemy.id : indexPlayer;
-        game.players.forEach((player) => {
-          UsersService.getUserByName(player.userName)?.wsRef.send(
+        } else {
+          GamesService.notifyAllPlayers(
+            game,
             JSON.stringify({
-              type: 'turn',
+              type: 'attack',
               data: JSON.stringify({
-                currentPlayer: game.currentPlayerId,
+                position: { x, y },
+                currentPlayer: indexPlayer,
+                status: resultAttack.status,
               }),
               id: 0,
             }),
           );
-        });
+        }
+        game.currentPlayerId =
+          resultAttack.status === 'miss' ? enemy.id : indexPlayer;
+        GamesService.notifyAllPlayers(
+          game,
+          JSON.stringify({
+            type: 'turn',
+            data: JSON.stringify({
+              currentPlayer: game.currentPlayerId,
+            }),
+            id: 0,
+          }),
+        );
         break;
       }
       case 'randomAttack': {
@@ -260,91 +264,88 @@ wss.on('connection', function connection(ws, req) {
           }
           const { length, position, direction } = ship;
           for (let i = 0; i < length; i += 1) {
-            game.players.forEach((player) => {
-              UsersService.getUserByName(player.userName)?.wsRef.send(
-                JSON.stringify({
-                  type: 'attack',
-                  data: JSON.stringify({
-                    position: direction
-                      ? { x: position.x, y: position.y + i }
-                      : { x: position.x + i, y: position.y },
-                    currentPlayer: indexPlayer,
-                    status: 'killed',
-                  }),
-                  id: 0,
+            GamesService.notifyAllPlayers(
+              game,
+              JSON.stringify({
+                type: 'attack',
+                data: JSON.stringify({
+                  position: direction
+                    ? { x: position.x, y: position.y + i }
+                    : { x: position.x + i, y: position.y },
+                  currentPlayer: indexPlayer,
+                  status: 'killed',
                 }),
-              );
-            });
-            if (player.countKilledShips === 10) {
-              const winPlayer = UsersService.getUserByName(
-                player.userName,
-              )?.index;
-              if (!winPlayer) {
-                return;
-              }
-              game.players.forEach((player) => {
-                UsersService.getUserByName(player.userName)?.wsRef.send(
-                  JSON.stringify({
-                    type: 'finish',
-                    data: JSON.stringify({
-                      winPlayer,
-                    }),
-                    id: 0,
-                  }),
-                );
-              });
-              finishGame(winPlayer);
-              delete rooms[game.roomId];
-              wss.clients.forEach(function each(client) {
-                if (client.readyState === WebSocket.OPEN) {
-                  client.send(getUpdateRoomData());
-                }
-              });
-            }
+                id: 0,
+              }),
+            );
           }
-          getMissPositions(ship).forEach(({ x, y }) => {
-            game.players.forEach((player) => {
-              UsersService.getUserByName(player.userName)?.wsRef.send(
-                JSON.stringify({
-                  type: 'attack',
-                  data: JSON.stringify({
-                    position: { x, y },
-                    currentPlayer: indexPlayer,
-                    status: 'miss',
-                  }),
-                  id: 0,
+
+          if (player.countKilledShips === 10) {
+            const winPlayer = UsersService.getUserByName(
+              player.userName,
+            )?.index;
+            if (!winPlayer) {
+              return;
+            }
+            GamesService.notifyAllPlayers(
+              game,
+              JSON.stringify({
+                type: 'finish',
+                data: JSON.stringify({
+                  winPlayer,
                 }),
-              );
+                id: 0,
+              }),
+            );
+            finishGame(winPlayer);
+            delete rooms[game.roomId];
+            wss.clients.forEach(function each(client) {
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(getUpdateRoomData());
+              }
             });
-          });
-        } else {
-          game.players.forEach((player) => {
-            UsersService.getUserByName(player.userName)?.wsRef.send(
+          }
+
+          getMissPositions(ship).forEach(({ x, y }) => {
+            GamesService.notifyAllPlayers(
+              game,
               JSON.stringify({
                 type: 'attack',
                 data: JSON.stringify({
                   position: { x, y },
                   currentPlayer: indexPlayer,
-                  status: resultAttack.status,
+                  status: 'miss',
                 }),
                 id: 0,
               }),
             );
           });
-        }
-        game.currentPlayerId =
-          resultAttack.status === 'miss' ? enemy.id : indexPlayer;
-        game.players.forEach((player) => {
-          UsersService.getUserByName(player.userName)?.wsRef.send(
+        } else {
+          GamesService.notifyAllPlayers(
+            game,
             JSON.stringify({
-              type: 'turn',
+              type: 'attack',
               data: JSON.stringify({
-                currentPlayer: game.currentPlayerId,
+                position: { x, y },
+                currentPlayer: indexPlayer,
+                status: resultAttack.status,
               }),
               id: 0,
             }),
           );
-        });
+        }
+        game.currentPlayerId =
+          resultAttack.status === 'miss' ? enemy.id : indexPlayer;
+        GamesService.notifyAllPlayers(
+          game,
+          JSON.stringify({
+            type: 'turn',
+            data: JSON.stringify({
+              currentPlayer: game.currentPlayerId,
+            }),
+            id: 0,
+          }),
+        );
         break;
       }
     }
