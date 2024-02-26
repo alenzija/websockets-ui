@@ -1,12 +1,9 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as http from 'http';
+import fs from 'fs';
+import path from 'path';
+import http from 'http';
 import WebSocket, { WebSocketServer } from 'ws';
-import { checkAttack } from 'checkAttack';
-
-// import WebSocket from 'ws';
-
-// const wss = new WebSocket.Server({ port: 8080 });
+import { checkAttack, getMissPositions } from 'utils';
+import { Game, Room, User } from 'types';
 
 export const httpServer = http.createServer(function (req, res) {
   const __dirname = path.resolve(path.dirname(''));
@@ -23,54 +20,12 @@ export const httpServer = http.createServer(function (req, res) {
   });
 });
 
-type User = {
-  name: string;
-  password: string;
-  index: string | number;
-  wsRef: WebSocket;
-};
-
-type Room = {
-  id: string | number;
-  name: string;
-  users: User['name'][];
-};
-
-export type Ship = {
-  position: {
-    x: number;
-    y: number;
-  };
-  direction: boolean;
-  shots?: number;
-  length: 1 | 2 | 3 | 4;
-  type: 'small' | 'medium' | 'large' | 'huge';
-};
-
-type Game = {
-  id: number;
-  players: {
-    id: number;
-    userName: User['name'];
-    ships?: Ship[];
-    steps: { x: number; y: number }[];
-  }[];
-  // creator: {
-  //   id: number;
-  //   userName: User['name'];
-  //   ships?: Ship[];
-  // };
-  // secondPlayer: {
-  //   id: number;
-  //   userName: User['name'];
-  //   ships?: Ship[];
-  // };
-  winner?: User['name'];
-};
-
 const users: Record<string, User> = {};
 const rooms: Record<string | number, Room> = {};
 const games: Record<string, Game> = {};
+const winners: Record<string, { name?: string; wins: number }> = {};
+
+const wss = new WebSocketServer({ port: 3000 });
 
 const getUpdateRoomData = () => {
   return JSON.stringify({
@@ -88,7 +43,37 @@ const getUpdateRoomData = () => {
   });
 };
 
-const wss = new WebSocketServer({ port: 3000 });
+const updateWinners = (playerName: string) => {
+  const winner = winners[playerName];
+  if (winner) {
+    winner.wins += 0.5;
+  } else {
+    winners[playerName] = {
+      name: playerName,
+      wins: 1,
+    };
+  }
+};
+
+const finishGame = (winPlayer: number | string) => {
+  const user = Object.values(users).find((user) => user.index === winPlayer);
+  if (!user) {
+    return;
+  }
+  updateWinners(user.name);
+  wss.clients.forEach(function each(client) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(
+        JSON.stringify({
+          type: 'update_winners',
+          data: JSON.stringify(Object.values(winners)),
+          id: 0,
+        }),
+      );
+    }
+  });
+};
+
 wss.on('connection', function connection(ws, req) {
   ws.on('error', console.error);
 
@@ -97,7 +82,6 @@ wss.on('connection', function connection(ws, req) {
     const currentUser = Object.values(users).find(
       (user) => user.index === userID,
     );
-    // console.log('receive user: ', userID);
     const request = JSON.parse(payload.toString());
     const data = request.data.length > 0 ? JSON.parse(request.data) : {};
     let response: string | object = '';
@@ -127,11 +111,9 @@ wss.on('connection', function connection(ws, req) {
         break;
       }
       case 'create_room': {
-        const roomName = 'SOME ROOM';
         const roomId = Date.now();
         rooms[roomId] = {
           id: roomId,
-          name: roomName,
           users: currentUser ? [currentUser.name] : [],
         };
         response = {
@@ -142,30 +124,34 @@ wss.on('connection', function connection(ws, req) {
       }
       case 'add_user_to_room': {
         const room = rooms[data.indexRoom];
-        // if (!room.users[0]) {
-        //   return;
-        // }
-
         if (
           room &&
           currentUser &&
           room.users[0] &&
+          currentUser &&
+          room.users.length < 2 &&
           !room.users.some((userName) => userName === currentUser.name)
         ) {
+          const firstPlayerID = Date.now();
+          const secondPlayerID = Date.now() + 1;
           const game = {
             id: Date.now(),
             players: [
               {
-                id: Date.now(),
+                id: firstPlayerID,
                 userName: room.users[0],
                 steps: [],
+                countKilledShips: 0,
               },
               {
-                id: Date.now() + 1,
+                id: secondPlayerID,
                 userName: currentUser.name,
                 steps: [],
+                countKilledShips: 0,
               },
             ],
+            roomId: room.id,
+            currentPlayerId: firstPlayerID,
           };
 
           games[game.id] = game;
@@ -205,7 +191,7 @@ wss.on('connection', function connection(ws, req) {
         }
 
         const currentPlayer = game.players.find(
-          (player) => +indexPlayer === +player.id,
+          (player) => player.id && +indexPlayer === +player.id,
         );
 
         if (!currentPlayer) {
@@ -218,7 +204,6 @@ wss.on('connection', function connection(ws, req) {
           game.players.map((player) => player.ships).filter((ships) => ships)
             .length === 2
         ) {
-          console.log('game is ready to start');
           game.players.forEach((player) => {
             users[player.userName]?.wsRef?.send(
               JSON.stringify({
@@ -252,52 +237,241 @@ wss.on('connection', function connection(ws, req) {
         const { x, y, gameId, indexPlayer } = data;
         const game = games[gameId];
 
+        if (indexPlayer !== game?.currentPlayerId) {
+          return;
+        }
+
         if (!game) {
           return;
         }
 
-        console.log('info', {
-          players: game.players,
-          indexPlayer,
-        });
+        const currentPlayer = game.players.find(
+          (player) => player.id === game.currentPlayerId,
+        );
+
+        // if (
+        //   currentPlayer?.steps.some(
+        //     (position) => position.x === x && position.y === y,
+        //   )
+        // ) {
+        //   return;
+        // }
 
         const enemy = game.players.find((player) => player.id !== indexPlayer);
 
-        if (!enemy || !enemy.ships) {
+        if (!enemy || !enemy.ships || !currentPlayer) {
           return;
         }
 
-        const resultAttack = checkAttack(x, y, enemy.ships);
-
-        game.players.forEach((player) => {
-          users[player.userName]?.wsRef.send(
-            JSON.stringify({
-              type: 'attack',
-              data: JSON.stringify({
-                position: { x, y },
-                currentPlayer: indexPlayer,
-                status: resultAttack, //"miss"|"killed"|"shot",
+        const resultAttack = checkAttack(
+          x,
+          y,
+          enemy.ships,
+          currentPlayer.steps,
+        );
+        if (resultAttack.status === 'killed') {
+          currentPlayer.countKilledShips += 1;
+          const ship = resultAttack.ship;
+          if (!ship) {
+            return;
+          }
+          const { length, position, direction } = ship;
+          for (let i = 0; i < length; i += 1) {
+            game.players.forEach((player) => {
+              users[player.userName]?.wsRef.send(
+                JSON.stringify({
+                  type: 'attack',
+                  data: JSON.stringify({
+                    position: direction
+                      ? { x: position.x, y: position.y + i }
+                      : { x: position.x + i, y: position.y },
+                    currentPlayer: indexPlayer,
+                    status: 'killed',
+                  }),
+                  id: 0,
+                }),
+              );
+            });
+            if (currentPlayer.countKilledShips === 10) {
+              const winPlayer = users[currentPlayer.userName]?.index;
+              if (!winPlayer) {
+                return;
+              }
+              game.players.forEach((player) => {
+                users[player.userName]?.wsRef.send(
+                  JSON.stringify({
+                    type: 'finish',
+                    data: JSON.stringify({
+                      winPlayer,
+                    }),
+                    id: 0,
+                  }),
+                );
+              });
+              finishGame(winPlayer);
+              delete rooms[game.roomId];
+              wss.clients.forEach(function each(client) {
+                if (client.readyState === WebSocket.OPEN) {
+                  client.send(getUpdateRoomData());
+                }
+              });
+            }
+          }
+          getMissPositions(ship).forEach(({ x, y }) => {
+            game.players.forEach((player) => {
+              users[player.userName]?.wsRef.send(
+                JSON.stringify({
+                  type: 'attack',
+                  data: JSON.stringify({
+                    position: { x, y },
+                    currentPlayer: indexPlayer,
+                    status: 'miss',
+                  }),
+                  id: 0,
+                }),
+              );
+            });
+          });
+        } else {
+          game.players.forEach((player) => {
+            users[player.userName]?.wsRef.send(
+              JSON.stringify({
+                type: 'attack',
+                data: JSON.stringify({
+                  position: { x, y },
+                  currentPlayer: indexPlayer,
+                  status: resultAttack.status,
+                }),
+                id: 0,
               }),
-              id: 0,
-            }),
-          );
-        });
-
+            );
+          });
+        }
+        game.currentPlayerId =
+          resultAttack.status === 'miss' ? enemy.id : indexPlayer;
         game.players.forEach((player) => {
           users[player.userName]?.wsRef.send(
             JSON.stringify({
               type: 'turn',
               data: JSON.stringify({
-                currentPlayer:
-                  resultAttack === 'killed' || resultAttack === 'shot'
-                    ? indexPlayer
-                    : enemy.id,
+                currentPlayer: game.currentPlayerId,
               }),
               id: 0,
             }),
           );
         });
+        break;
+      }
+      case 'randomAttack': {
+        const { gameId, indexPlayer } = data;
+        const game = games[gameId];
+        if (!game) {
+          return;
+        }
+        const player = game.players.find(({ id }) => id === indexPlayer);
+        const enemy = game.players.find(({ id }) => id !== indexPlayer);
+        if (!player || !enemy || !enemy.ships) {
+          return;
+        }
 
+        let x = Math.ceil(Math.random() * 9);
+        let y = Math.ceil(Math.random() * 9);
+        while (player.steps.some((step) => step.x === x && step.y === y)) {
+          x = Math.ceil(Math.random() * 9);
+          y = Math.ceil(Math.random() * 9);
+        }
+        const resultAttack = checkAttack(x, y, enemy.ships, player.steps);
+        if (resultAttack.status === 'killed') {
+          player.countKilledShips += 1;
+          const ship = resultAttack.ship;
+          if (!ship) {
+            return;
+          }
+          const { length, position, direction } = ship;
+          for (let i = 0; i < length; i += 1) {
+            game.players.forEach((player) => {
+              users[player.userName]?.wsRef.send(
+                JSON.stringify({
+                  type: 'attack',
+                  data: JSON.stringify({
+                    position: direction
+                      ? { x: position.x, y: position.y + i }
+                      : { x: position.x + i, y: position.y },
+                    currentPlayer: indexPlayer,
+                    status: 'killed',
+                  }),
+                  id: 0,
+                }),
+              );
+            });
+            if (player.countKilledShips === 10) {
+              const winPlayer = users[player.userName]?.index;
+              if (!winPlayer) {
+                return;
+              }
+              game.players.forEach((player) => {
+                users[player.userName]?.wsRef.send(
+                  JSON.stringify({
+                    type: 'finish',
+                    data: JSON.stringify({
+                      winPlayer,
+                    }),
+                    id: 0,
+                  }),
+                );
+              });
+              finishGame(winPlayer);
+              delete rooms[game.roomId];
+              wss.clients.forEach(function each(client) {
+                if (client.readyState === WebSocket.OPEN) {
+                  client.send(getUpdateRoomData());
+                }
+              });
+            }
+          }
+          getMissPositions(ship).forEach(({ x, y }) => {
+            game.players.forEach((player) => {
+              users[player.userName]?.wsRef.send(
+                JSON.stringify({
+                  type: 'attack',
+                  data: JSON.stringify({
+                    position: { x, y },
+                    currentPlayer: indexPlayer,
+                    status: 'miss',
+                  }),
+                  id: 0,
+                }),
+              );
+            });
+          });
+        } else {
+          game.players.forEach((player) => {
+            users[player.userName]?.wsRef.send(
+              JSON.stringify({
+                type: 'attack',
+                data: JSON.stringify({
+                  position: { x, y },
+                  currentPlayer: indexPlayer,
+                  status: resultAttack.status,
+                }),
+                id: 0,
+              }),
+            );
+          });
+        }
+        game.currentPlayerId =
+          resultAttack.status === 'miss' ? enemy.id : indexPlayer;
+        game.players.forEach((player) => {
+          users[player.userName]?.wsRef.send(
+            JSON.stringify({
+              type: 'turn',
+              data: JSON.stringify({
+                currentPlayer: game.currentPlayerId,
+              }),
+              id: 0,
+            }),
+          );
+        });
         break;
       }
     }
@@ -310,8 +484,6 @@ wss.on('connection', function connection(ws, req) {
         }),
       );
     }
-
-    // console.log('current users: ', users);
     wss.clients.forEach(function each(client) {
       if (client.readyState === WebSocket.OPEN) {
         client.send(getUpdateRoomData());
